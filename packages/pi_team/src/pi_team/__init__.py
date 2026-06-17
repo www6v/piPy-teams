@@ -5,6 +5,7 @@ from pi_team.runtime import (
     clear_team_runtime,
     configure_team_runtime,
     get_team_runtime,
+    reset_team_runtime,
 )
 from pi_team.types import TeamMemberRef, TeamRef
 
@@ -16,6 +17,7 @@ __all__ = [
     "configure_team_runtime",
     "get_team_runtime",
     "get_loop_manager",
+    "reset_team_runtime",
 ]
 
 

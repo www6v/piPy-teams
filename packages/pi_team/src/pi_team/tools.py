@@ -84,7 +84,11 @@ class TeamCreateTool:
         try:
             payload = await create_team(args)
             runtime = get_team_runtime()
-            if isinstance(payload, dict) and payload.get("id"):
+            if (
+                runtime is not None
+                and isinstance(payload, dict)
+                and payload.get("id")
+            ):
                 runtime.active_team_id = str(payload["id"])
             return _json_result(payload)
         except RuntimeError as exc:

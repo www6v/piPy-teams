@@ -5,9 +5,16 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from pi_team.loop import TeammateLoopManager
+if TYPE_CHECKING:
+    from pi_team.loop import TeammateLoopManager
+
+
+def _default_loop_manager() -> TeammateLoopManager:
+    from pi_team.loop import TeammateLoopManager
+
+    return TeammateLoopManager()
 
 
 TEAM_TOOL_NAMES = frozenset(
@@ -39,7 +46,7 @@ class TeamRuntime:
     append_session_events: AppendEventsFn | None = None
     enqueue_session_events: EnqueueEventsFn | None = None
     loop_manager: TeammateLoopManager = field(
-        default_factory=TeammateLoopManager,
+        default_factory=_default_loop_manager,
         repr=False,
     )
 
