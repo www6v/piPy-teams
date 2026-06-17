@@ -1,0 +1,26 @@
+[project]
+name = "pipy-teams"
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = ["pi-team"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+pi-agent = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.2.0", subdirectory = "packages/pi_agent" }
+pi-ai = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.2.0", subdirectory = "packages/pi_ai" }
+pi-team = { workspace = true }
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[tool.uv]
+dev-dependencies = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages/pi_team/tests"]
+pythonpath = ["packages/pi_team/src"]
