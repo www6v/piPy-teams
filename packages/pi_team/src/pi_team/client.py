@@ -9,11 +9,15 @@ from pi_team.service import (
     TeamNotFoundError,
     TeamServiceError,
     create_team as _create_team,
+    create_team_task as _create_team_task,
+    get_team_task as _get_team_task,
     list_teams as _list_teams,
+    list_team_tasks as _list_team_tasks,
     read_team_messages as _read_team_messages,
     send_team_message as _send_team_message,
     session_id_from_runtime,
     spawn_teammate as _spawn_teammate,
+    update_team_task as _update_team_task,
 )
 
 
@@ -57,5 +61,33 @@ async def send_team_message(args: dict[str, Any]) -> dict[str, Any]:
 async def read_team_messages(args: dict[str, Any]) -> dict[str, Any]:
     try:
         return await _read_team_messages(session_id_from_runtime(), args)
+    except Exception as exc:
+        raise _wrap_error(exc) from exc
+
+
+async def create_team_task(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _create_team_task(session_id_from_runtime(), args)
+    except Exception as exc:
+        raise _wrap_error(exc) from exc
+
+
+async def update_team_task(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _update_team_task(session_id_from_runtime(), args)
+    except Exception as exc:
+        raise _wrap_error(exc) from exc
+
+
+async def list_team_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _list_team_tasks(session_id_from_runtime(), args)
+    except Exception as exc:
+        raise _wrap_error(exc) from exc
+
+
+async def get_team_task(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _get_team_task(session_id_from_runtime(), args)
     except Exception as exc:
         raise _wrap_error(exc) from exc

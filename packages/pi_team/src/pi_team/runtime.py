@@ -23,6 +23,10 @@ TEAM_TOOL_NAMES = frozenset(
         "spawn_teammate",
         "send_team_message",
         "read_team_messages",
+        "team_task_create",
+        "team_task_update",
+        "team_task_list",
+        "team_task_get",
     }
 )
 

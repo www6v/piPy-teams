@@ -8,6 +8,7 @@ from typing import Any
 
 from pi_team.ids import (
     PRIMARY_THREAD_ID,
+    new_task_id,
     new_team_id,
     new_team_member_id,
     new_team_message_id,
@@ -27,6 +28,7 @@ from pi_team.store import (
     TeamMemberRow,
     TeamRow,
     TeamStore,
+    TeamTaskRow,
     resolve_database_path,
 )
 
@@ -514,6 +516,190 @@ async def read_team_messages(
         )
 
     return {"messages": [serialize_message(m) for m in msgs]}
+
+
+# ── team tasks ────────────────────────────────────────────────────────────────
+
+
+def _serialize_task(task: TeamTaskRow) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "team_id": task.team_id,
+        "subject": task.subject,
+        "description": task.description or None,
+        "active_form": task.active_form or None,
+        "owner_member_id": task.owner_member_id or None,
+        "status": task.status,
+        "blocks": task.blocks,
+        "blocked_by": task.blocked_by,
+        "metadata": task.metadata or None,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+
+
+async def create_team_task(
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    team_id = str(args.get("team_id") or "").strip()
+    subject = str(args.get("subject") or "").strip()
+    if not team_id or not subject:
+        raise TeamServiceError("team_id and subject are required")
+
+    _, store = _require_session(session_id)
+    team = store.get_team_by_id(session_id, team_id)
+    if team is None:
+        raise TeamNotFoundError("not found")
+
+    raw_metadata = args.get("metadata")
+    metadata: dict[str, Any] = {}
+    if isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+
+    now = _now_ms()
+    task = TeamTaskRow(
+        id=new_task_id(),
+        team_id=team_id,
+        subject=subject,
+        description=str(args.get("description") or ""),
+        active_form=str(args.get("active_form") or ""),
+        owner_member_id=str(args.get("owner_member_id") or ""),
+        status="pending",
+        blocks=[],
+        blocked_by=[],
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
+    store.create_task(task)
+    return _serialize_task(task)
+
+
+async def update_team_task(
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    import json as _json
+
+    team_id = str(args.get("team_id") or "").strip()
+    task_id = str(args.get("task_id") or "").strip()
+    if not team_id or not task_id:
+        raise TeamServiceError("team_id and task_id are required")
+
+    _, store = _require_session(session_id)
+    team = store.get_team_by_id(session_id, team_id)
+    if team is None:
+        raise TeamNotFoundError("not found")
+
+    task = store.get_task(team_id, task_id)
+    if task is None:
+        raise TeamServiceError("task not found")
+
+    status = args.get("status")
+    if status == "deleted":
+        store.delete_task(team_id, task_id)
+        return {"deleted": True, "task_id": task_id}
+
+    db_updates: dict[str, Any] = {}
+    updated_fields: list[str] = []
+
+    if "subject" in args and args["subject"] != task.subject:
+        db_updates["subject"] = str(args["subject"])
+        updated_fields.append("subject")
+    if "description" in args and args["description"] != task.description:
+        db_updates["description"] = str(args["description"] or "")
+        updated_fields.append("description")
+    if "active_form" in args and args["active_form"] != task.active_form:
+        db_updates["active_form"] = str(args["active_form"] or "")
+        updated_fields.append("active_form")
+    if "owner_member_id" in args and args["owner_member_id"] != task.owner_member_id:
+        db_updates["owner_member_id"] = str(args["owner_member_id"] or "") or None
+        updated_fields.append("owner_member_id")
+    if status and status != task.status:
+        db_updates["status"] = status
+        updated_fields.append("status")
+
+    # addBlocks: add IDs this task blocks
+    add_blocks = args.get("add_blocks") or []
+    if isinstance(add_blocks, list) and add_blocks:
+        new_blocks = list({*task.blocks, *[str(x) for x in add_blocks]})
+        db_updates["blocks_json"] = _json.dumps(new_blocks)
+        updated_fields.append("blocks")
+
+    # addBlockedBy: add IDs that block this task
+    add_blocked_by = args.get("add_blocked_by") or []
+    if isinstance(add_blocked_by, list) and add_blocked_by:
+        new_blocked_by = list({*task.blocked_by, *[str(x) for x in add_blocked_by]})
+        db_updates["blocked_by_json"] = _json.dumps(new_blocked_by)
+        updated_fields.append("blocked_by")
+
+    if "metadata" in args and isinstance(args["metadata"], dict):
+        merged = {**task.metadata}
+        for k, v in args["metadata"].items():
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        db_updates["metadata_json"] = _json.dumps(merged)
+        updated_fields.append("metadata")
+
+    if db_updates:
+        store.update_task(team_id, task_id, db_updates)
+
+    updated = store.get_task(team_id, task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "updated_fields": updated_fields,
+        "task": _serialize_task(updated) if updated else None,
+    }
+
+
+async def list_team_tasks(
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    team_id = str(args.get("team_id") or "").strip()
+    if not team_id:
+        raise TeamServiceError("team_id is required")
+
+    _, store = _require_session(session_id)
+    team = store.get_team_by_id(session_id, team_id)
+    if team is None:
+        raise TeamNotFoundError("not found")
+
+    all_tasks = store.list_tasks(team_id)
+    completed_ids = {t.id for t in all_tasks if t.status == "completed"}
+    tasks = [
+        {
+            "id": t.id,
+            "subject": t.subject,
+            "status": t.status,
+            "owner_member_id": t.owner_member_id or None,
+            "blocked_by": [x for x in t.blocked_by if x not in completed_ids],
+        }
+        for t in all_tasks
+    ]
+    return {"tasks": tasks}
+
+
+async def get_team_task(
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    team_id = str(args.get("team_id") or "").strip()
+    task_id = str(args.get("task_id") or "").strip()
+    if not team_id or not task_id:
+        raise TeamServiceError("team_id and task_id are required")
+
+    _, store = _require_session(session_id)
+    team = store.get_team_by_id(session_id, team_id)
+    if team is None:
+        raise TeamNotFoundError("not found")
+
+    task = store.get_task(team_id, task_id)
+    return {"task": _serialize_task(task) if task else None}
 
 
 def session_id_from_runtime() -> str:

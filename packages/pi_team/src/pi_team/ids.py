@@ -29,3 +29,7 @@ def new_team_message_id() -> str:
 
 def new_thread_id() -> str:
     return f"sthr_{_random_string()}"
+
+
+def new_task_id() -> str:
+    return f"ttsk-{_random_string()}"

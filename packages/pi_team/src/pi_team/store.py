@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -56,6 +57,22 @@ class AgentMessageRow:
     summary: str
     read_at: int | None
     created_at: int
+
+
+@dataclass(frozen=True)
+class TeamTaskRow:
+    id: str
+    team_id: str
+    subject: str
+    description: str
+    active_form: str
+    owner_member_id: str
+    status: str
+    blocks: list[str]
+    blocked_by: list[str]
+    metadata: dict[str, Any]
+    created_at: int
+    updated_at: int
 
 
 def resolve_database_path(explicit: str | None = None) -> str:
@@ -361,6 +378,95 @@ class TeamStore:
             cur = conn.execute(query, params)
             return int(cur.rowcount)
 
+    # ── team tasks ────────────────────────────────────────────────────────────
+
+    def create_task(self, task: TeamTaskRow) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO team_tasks (
+                    id, team_id, subject, description, active_form,
+                    owner_member_id, status, blocks_json, blocked_by_json,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task.id,
+                    task.team_id,
+                    task.subject,
+                    task.description or None,
+                    task.active_form or None,
+                    task.owner_member_id or None,
+                    task.status,
+                    json.dumps(task.blocks),
+                    json.dumps(task.blocked_by),
+                    json.dumps(task.metadata) if task.metadata else None,
+                    task.created_at,
+                    task.updated_at,
+                ),
+            )
+
+    def get_task(self, team_id: str, task_id: str) -> TeamTaskRow | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, team_id, subject, description, active_form,
+                       owner_member_id, status, blocks_json, blocked_by_json,
+                       metadata_json, created_at, updated_at
+                FROM team_tasks
+                WHERE team_id = ? AND id = ?
+                """,
+                (team_id, task_id),
+            ).fetchone()
+        return _scan_task(row)
+
+    def list_tasks(self, team_id: str) -> list[TeamTaskRow]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, team_id, subject, description, active_form,
+                       owner_member_id, status, blocks_json, blocked_by_json,
+                       metadata_json, created_at, updated_at
+                FROM team_tasks
+                WHERE team_id = ?
+                ORDER BY created_at ASC
+                """,
+                (team_id,),
+            ).fetchall()
+        return [t for row in rows if (t := _scan_task(row)) is not None]
+
+    def update_task(
+        self,
+        team_id: str,
+        task_id: str,
+        updates: dict[str, Any],
+    ) -> bool:
+        if not updates:
+            return False
+        now = int(time.time() * 1000)
+        cols: list[str] = []
+        params: list[Any] = []
+        for col, val in updates.items():
+            cols.append(f"{col} = ?")
+            params.append(val)
+        cols.append("updated_at = ?")
+        params.append(now)
+        params.extend([team_id, task_id])
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE team_tasks SET {', '.join(cols)} WHERE team_id = ? AND id = ?",
+                params,
+            )
+            return int(cur.rowcount) > 0
+
+    def delete_task(self, team_id: str, task_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM team_tasks WHERE team_id = ? AND id = ?",
+                (team_id, task_id),
+            )
+            return int(cur.rowcount) > 0
+
 
 def _scan_team(row: sqlite3.Row | None) -> TeamRow | None:
     if row is None:
@@ -409,4 +515,42 @@ def _scan_message(row: sqlite3.Row | None) -> AgentMessageRow | None:
         summary=str(row["summary"] or ""),
         read_at=int(read_at) if read_at is not None else None,
         created_at=int(row["created_at"]),
+    )
+
+
+def _scan_task(row: sqlite3.Row | None) -> TeamTaskRow | None:
+    if row is None:
+        return None
+
+    def _json_list(val: Any) -> list[str]:
+        try:
+            parsed = json.loads(val or "[]")
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return []
+
+    def _json_dict(val: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(val or "{}")
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return {}
+
+    return TeamTaskRow(
+        id=str(row["id"]),
+        team_id=str(row["team_id"]),
+        subject=str(row["subject"]),
+        description=str(row["description"] or ""),
+        active_form=str(row["active_form"] or ""),
+        owner_member_id=str(row["owner_member_id"] or ""),
+        status=str(row["status"]),
+        blocks=_json_list(row["blocks_json"]),
+        blocked_by=_json_list(row["blocked_by_json"]),
+        metadata=_json_dict(row["metadata_json"]),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
     )

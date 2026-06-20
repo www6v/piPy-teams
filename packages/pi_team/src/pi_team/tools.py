@@ -10,9 +10,13 @@ from pi_ai.types import TextContent
 
 from pi_team.client import (
     create_team,
+    create_team_task,
+    get_team_task,
+    list_team_tasks,
     read_team_messages,
     send_team_message,
     spawn_teammate,
+    update_team_task,
 )
 from pi_team.runtime import get_team_runtime
 
@@ -216,6 +220,171 @@ class ReadTeamMessagesTool:
         del tool_call_id, signal, on_update
         try:
             payload = await read_team_messages(args)
+            return _json_result(payload)
+        except RuntimeError as exc:
+            return _json_result({"error": str(exc)}, is_error=True)
+
+
+class TeamTaskCreateTool:
+    name = "team_task_create"
+    description = (
+        "Create a task in a team's task board. Tasks start as 'pending' and "
+        "can be assigned to members by display_name. Use team_task_update to "
+        "set status and dependencies after creation."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "team_id": {"type": "string"},
+            "subject": {
+                "type": "string",
+                "description": "Brief actionable title (imperative form)",
+            },
+            "description": {
+                "type": "string",
+                "description": "What needs to be done",
+            },
+            "active_form": {
+                "type": "string",
+                "description": "Present continuous form shown when in_progress (e.g. 'Running tests')",
+            },
+            "owner_member_id": {
+                "type": "string",
+                "description": "Member ID to assign the task to",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Arbitrary key-value metadata",
+            },
+        },
+        "required": ["team_id", "subject"],
+    }
+    execution_mode = "parallel"
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        args: dict[str, Any],
+        signal: Any = None,
+        on_update: Any = None,
+    ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
+        try:
+            payload = await create_team_task(args)
+            return _json_result(payload)
+        except RuntimeError as exc:
+            return _json_result({"error": str(exc)}, is_error=True)
+
+
+class TeamTaskUpdateTool:
+    name = "team_task_update"
+    description = (
+        "Update a task on the team task board. Set status='deleted' to remove "
+        "the task permanently. Use add_blocks/add_blocked_by to set dependencies."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "team_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "subject": {"type": "string"},
+            "description": {"type": "string"},
+            "active_form": {"type": "string"},
+            "owner_member_id": {"type": "string"},
+            "status": {
+                "type": "string",
+                "description": "pending | in_progress | completed | deleted",
+            },
+            "add_blocks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that this task blocks",
+            },
+            "add_blocked_by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that must complete before this task",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Keys to merge; set a key to null to delete it",
+            },
+        },
+        "required": ["team_id", "task_id"],
+    }
+    execution_mode = "parallel"
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        args: dict[str, Any],
+        signal: Any = None,
+        on_update: Any = None,
+    ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
+        try:
+            payload = await update_team_task(args)
+            return _json_result(payload)
+        except RuntimeError as exc:
+            return _json_result({"error": str(exc)}, is_error=True)
+
+
+class TeamTaskListTool:
+    name = "team_task_list"
+    description = (
+        "List all tasks on the team task board. Returns id, subject, status, "
+        "owner, and unresolved blockers. Check this before creating duplicates."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "team_id": {"type": "string"},
+        },
+        "required": ["team_id"],
+    }
+    execution_mode = "parallel"
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        args: dict[str, Any],
+        signal: Any = None,
+        on_update: Any = None,
+    ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
+        try:
+            payload = await list_team_tasks(args)
+            return _json_result(payload)
+        except RuntimeError as exc:
+            return _json_result({"error": str(exc)}, is_error=True)
+
+
+class TeamTaskGetTool:
+    name = "team_task_get"
+    description = (
+        "Get full details of a single team task including description, "
+        "status, and all dependency information."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "team_id": {"type": "string"},
+            "task_id": {"type": "string"},
+        },
+        "required": ["team_id", "task_id"],
+    }
+    execution_mode = "parallel"
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        args: dict[str, Any],
+        signal: Any = None,
+        on_update: Any = None,
+    ) -> AgentToolResult:
+        del tool_call_id, signal, on_update
+        try:
+            payload = await get_team_task(args)
             return _json_result(payload)
         except RuntimeError as exc:
             return _json_result({"error": str(exc)}, is_error=True)
