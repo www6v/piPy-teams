@@ -211,8 +211,10 @@ async def send_shutdown_response(
     }
     if recipient is not None:
         team_msg["to_member_id"] = recipient.id
-        if recipient.thread_id:
-            team_msg["session_thread_id"] = recipient.thread_id
+    # Tag with the sender's thread so this protocol event doesn't land in the
+    # recipient's primary-thread history between a tool_use and its tool_result.
+    if member.thread_id:
+        team_msg["session_thread_id"] = member.thread_id
     await append_session_events([team_msg])
 
 
