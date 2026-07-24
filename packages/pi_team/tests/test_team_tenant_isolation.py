@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from pi_team.runtime import TeamRuntime, clear_team_runtime, configure_team_runtime
-from pi_team.service import TeamNotFoundError, TeamServiceError, create_team, spawn_teammate
+from pi_team.service import TeamNotFoundError, create_team, spawn_teammate
 
 
 @pytest.fixture(autouse=True)
@@ -157,9 +157,10 @@ async def test_create_team_uses_session_tenant_id(
 
 
 @pytest.mark.asyncio
-async def test_spawn_teammate_rejects_cross_tenant_agent(
+async def test_spawn_teammate_falls_back_to_lead_for_unknown_agent(
     tmp_path, mock_team_events
 ) -> None:
+    """Role names like coder are not tenant agents — reuse lead config."""
     db_path = tmp_path / "oma.db"
     _init_multi_tenant_db(db_path)
     _configure_runtime(
@@ -170,15 +171,45 @@ async def test_spawn_teammate_rejects_cross_tenant_agent(
     )
 
     team = await create_team("sess-a", {"name": "alpha"})
-    with pytest.raises(TeamServiceError, match="not found in tenant"):
-        await spawn_teammate(
-            "sess-a",
-            {
-                "team_id": team["id"],
-                "agent_id": "agt-b-worker",
-                "display_name": "coder",
-            },
-        )
+    member = await spawn_teammate(
+        "sess-a",
+        {
+            "team_id": team["id"],
+            "agent_id": "coder",
+            "display_name": "coder",
+            "start_poll_loop": False,
+        },
+    )
+    assert member["agent_id"] == "agt-a-lead"
+    assert member["display_name"] == "coder"
+    assert member["role"] == "coder"
+
+
+@pytest.mark.asyncio
+async def test_spawn_teammate_falls_back_for_cross_tenant_agent_id(
+    tmp_path, mock_team_events
+) -> None:
+    """Unknown/cross-tenant agent ids must not load foreign config."""
+    db_path = tmp_path / "oma.db"
+    _init_multi_tenant_db(db_path)
+    _configure_runtime(
+        db_path,
+        session_id="sess-a",
+        tenant_id="tenant-a",
+        lead_agent_id="agt-a-lead",
+    )
+
+    team = await create_team("sess-a", {"name": "alpha"})
+    member = await spawn_teammate(
+        "sess-a",
+        {
+            "team_id": team["id"],
+            "agent_id": "agt-b-worker",
+            "display_name": "coder",
+            "start_poll_loop": False,
+        },
+    )
+    assert member["agent_id"] == "agt-a-lead"
 
 
 @pytest.mark.asyncio
@@ -235,7 +266,7 @@ async def test_team_lookup_scoped_to_session(
 
 
 @pytest.mark.asyncio
-async def test_create_team_rejects_cross_tenant_initial_member(
+async def test_create_team_accepts_role_name_initial_members(
     tmp_path, mock_team_events
 ) -> None:
     db_path = tmp_path / "oma.db"
@@ -247,21 +278,55 @@ async def test_create_team_rejects_cross_tenant_initial_member(
         lead_agent_id="agt-a-lead",
     )
 
-    with pytest.raises(TeamServiceError, match="not found in tenant"):
-        await create_team(
-            "sess-a",
-            {
-                "name": "alpha",
-                "members": [
-                    {
-                        "agent_id": "agt-b-worker",
-                        "display_name": "coder",
-                    }
-                ],
-            },
-        )
+    payload = await create_team(
+        "sess-a",
+        {
+            "name": "alpha",
+            "members": [
+                {
+                    "agent_id": "coder",
+                    "display_name": "coder",
+                    "role": "Coder - write code",
+                },
+                {
+                    "agent_id": "qa",
+                    "display_name": "qa",
+                },
+            ],
+        },
+    )
+    members = {m["display_name"]: m for m in payload["members"]}
+    assert set(members) == {"lead", "coder", "qa"}
+    assert members["coder"]["agent_id"] == "agt-a-lead"
+    assert members["coder"]["role"] == "Coder - write code"
+    assert members["qa"]["agent_id"] == "agt-a-lead"
+    assert members["qa"]["role"] == "qa"
 
-    conn = sqlite3.connect(db_path)
-    count = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
-    conn.close()
-    assert count == 0
+
+@pytest.mark.asyncio
+async def test_create_team_does_not_bind_cross_tenant_initial_member(
+    tmp_path, mock_team_events
+) -> None:
+    db_path = tmp_path / "oma.db"
+    _init_multi_tenant_db(db_path)
+    _configure_runtime(
+        db_path,
+        session_id="sess-a",
+        tenant_id="tenant-a",
+        lead_agent_id="agt-a-lead",
+    )
+
+    payload = await create_team(
+        "sess-a",
+        {
+            "name": "alpha",
+            "members": [
+                {
+                    "agent_id": "agt-b-worker",
+                    "display_name": "coder",
+                }
+            ],
+        },
+    )
+    coder = next(m for m in payload["members"] if m["display_name"] == "coder")
+    assert coder["agent_id"] == "agt-a-lead"

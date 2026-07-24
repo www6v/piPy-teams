@@ -35,7 +35,10 @@ class TeamCreateTool:
         "Create a coordinated agent team within this session. "
         "The session lead is registered automatically as member display_name "
         "\"lead\" on the primary thread (use its id as from_member_id for "
-        "send_team_message). Returns team id and member ids."
+        "send_team_message). Returns team id and member ids. "
+        "Optional members need display_name (e.g. coder, qa). agent_id is "
+        "optional: omit it or pass a role name to reuse the lead agent; "
+        "pass a real tenant agent id only when spawning a different agent."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -57,16 +60,31 @@ class TeamCreateTool:
             },
             "members": {
                 "type": "array",
-                "description": "Optional initial teammates to spawn",
+                "description": (
+                    "Optional initial teammates to spawn. Prefer "
+                    "display_name + role; agent_id is optional."
+                ),
                 "items": {
                     "type": "object",
                     "properties": {
-                        "agent_id": {"type": "string"},
-                        "display_name": {"type": "string"},
+                        "agent_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional tenant agent id. Omit or use a "
+                                "role name to reuse the lead agent config."
+                            ),
+                        },
+                        "display_name": {
+                            "type": "string",
+                            "description": (
+                                "Mailbox address for send_team_message "
+                                "(e.g. coder, qa)"
+                            ),
+                        },
                         "role": {"type": "string"},
                         "color": {"type": "string"},
                     },
-                    "required": ["agent_id", "display_name"],
+                    "required": ["display_name"],
                 },
             },
         },
@@ -103,13 +121,22 @@ class SpawnTeammateTool:
     name = "spawn_teammate"
     description = (
         "Add a named teammate to an existing team. Creates a session thread "
-        "and registers the member for mailbox routing."
+        "and registers the member for mailbox routing. "
+        "display_name is the mailbox address (e.g. coder). agent_id is "
+        "optional — omit it or pass a role name to reuse the lead agent; "
+        "only pass a real tenant agent id to bind a different agent."
     )
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
             "team_id": {"type": "string"},
-            "agent_id": {"type": "string"},
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "Optional tenant agent id. Omit or use a role name "
+                    "(e.g. coder) to reuse the lead agent config."
+                ),
+            },
             "display_name": {
                 "type": "string",
                 "description": "Address used by send_team_message (to=...)",
@@ -123,7 +150,7 @@ class SpawnTeammateTool:
                 ),
             },
         },
-        "required": ["team_id", "agent_id", "display_name"],
+        "required": ["team_id", "display_name"],
     }
     execution_mode = "parallel"
 

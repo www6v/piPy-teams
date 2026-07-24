@@ -67,47 +67,67 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _resolve_teammate_agent_id(
+    store: TeamStore,
+    tenant_id: str,
+    requested_agent_id: str,
+    lead_agent_id: str,
+) -> str:
+    """Bind teammate to a tenant agent, or reuse the lead when unknown.
+
+    In-process teams commonly use role names (coder, qa) as agent_id.
+    Those are not registered agents — fall back to the lead agent config
+    so spawn/create succeed. Explicit tenant agent ids are still honored.
+    """
+    agent_id = (requested_agent_id or "").strip()
+    if agent_id and store.agent_exists(tenant_id, agent_id):
+        return agent_id
+    if not lead_agent_id:
+        if agent_id:
+            raise TeamServiceError(
+                f'agent "{agent_id}" not found in tenant'
+            )
+        raise TeamServiceError("lead_agent_id is required")
+    return lead_agent_id
+
+
 def _normalize_member_specs(
     raw_members: Any,
     *,
     lead_display_name: str,
     lead_agent_id: str,
+    store: TeamStore,
+    tenant_id: str,
 ) -> list[dict[str, str]]:
     if not isinstance(raw_members, list):
         return []
     specs: list[dict[str, str]] = []
+    seen_names: set[str] = set()
     for spec in raw_members:
         if not isinstance(spec, dict):
             continue
-        agent_id = str(spec.get("agent_id") or "").strip()
         display_name = str(spec.get("display_name") or "").strip()
-        if not agent_id or not display_name:
+        if not display_name or display_name == lead_display_name:
             continue
-        if display_name == lead_display_name:
+        if display_name in seen_names:
             continue
-        if agent_id == lead_agent_id:
-            continue
+        requested = str(spec.get("agent_id") or "").strip()
+        agent_id = _resolve_teammate_agent_id(
+            store, tenant_id, requested, lead_agent_id
+        )
+        role = str(spec.get("role") or "").strip()
+        if not role and requested and requested != agent_id:
+            role = requested
         specs.append(
             {
                 "agent_id": agent_id,
                 "display_name": display_name,
-                "role": str(spec.get("role") or "").strip(),
+                "role": role,
                 "color": str(spec.get("color") or "").strip(),
             }
         )
+        seen_names.add(display_name)
     return specs
-
-
-def _validate_member_specs(
-    store: TeamStore,
-    tenant_id: str,
-    specs: list[dict[str, str]],
-) -> None:
-    for spec in specs:
-        if not store.agent_exists(tenant_id, spec["agent_id"]):
-            raise TeamServiceError(
-                f'agent "{spec["agent_id"]}" not found in tenant'
-            )
 
 
 def _insert_member(
@@ -168,8 +188,9 @@ async def create_team(session_id: str, args: dict[str, Any]) -> dict[str, Any]:
         args.get("members"),
         lead_display_name=lead_display_name,
         lead_agent_id=lead_agent_id,
+        store=store,
+        tenant_id=sess.tenant_id,
     )
-    _validate_member_specs(store, sess.tenant_id, member_specs)
 
     now = _now_ms()
     team = TeamRow(
@@ -237,9 +258,7 @@ async def spawn_teammate(
     if team is None:
         raise TeamNotFoundError("not found")
 
-    agent_id = str(args.get("agent_id") or "").strip()
-    if not agent_id:
-        raise TeamServiceError("agent_id is required")
+    requested_agent_id = str(args.get("agent_id") or "").strip()
     display_name = str(args.get("display_name") or "").strip()
     if not display_name:
         raise TeamServiceError("display_name is required")
@@ -248,8 +267,13 @@ async def spawn_teammate(
     if existing is not None:
         raise TeamServiceError(f'member "{display_name}" already exists')
 
-    if not store.agent_exists(sess.tenant_id, agent_id):
-        raise TeamServiceError(f'agent "{agent_id}" not found in tenant')
+    lead_agent_id = team.lead_agent_id or sess.agent_id
+    agent_id = _resolve_teammate_agent_id(
+        store, sess.tenant_id, requested_agent_id, lead_agent_id
+    )
+    role = str(args.get("role") or "").strip()
+    if not role and requested_agent_id and requested_agent_id != agent_id:
+        role = requested_agent_id
 
     now = _now_ms()
     member = _insert_member(
@@ -257,7 +281,7 @@ async def spawn_teammate(
         team_id=team_id,
         agent_id=agent_id,
         display_name=display_name,
-        role=str(args.get("role") or "").strip(),
+        role=role,
         color=str(args.get("color") or "").strip(),
         now=now,
     )
