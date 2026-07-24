@@ -3,9 +3,10 @@
 -- piPy-teams - 团队协作扩展表结构 DDL
 -- 来源: piPy-teams/packages/pi_team/src/pi_team/store.py
 --        + piPy-teams/packages/pi_team/tests/test_team_tools.py
--- 数据库: SQLite, 与 oma-platform 共享 oma.db
---        (OMA_DATABASE_PATH / DATABASE_PATH, 缺省 ./data/oma.db)
--- 说明: 本模块不单独建库, 直接复用平台的 oma.db; 表的 DDL 同时维护在
+-- 数据库: 与 oma-platform 共享同一库
+--        * MySQL: DATABASE_URL (mysql://… / mysql+aiomysql://… / Go @tcp DSN)
+--        * SQLite (legacy/tests): OMA_DATABASE_PATH / DATABASE_PATH, 缺省 ./data/oma.db
+-- 说明: 本模块不单独建库; 表的 DDL 同时维护在
 --        oma-platform/scripts/sql/platform.sql (SQLite) 与
 --        oma-platform/scripts/sql/platform_mysql.sql (MySQL) 中,
 --        由 oma-platform 的 migration (017_teams.sql, 018_team_tasks.sql)

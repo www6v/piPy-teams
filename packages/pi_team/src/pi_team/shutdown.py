@@ -220,36 +220,44 @@ async def send_shutdown_response(
 
 async def drain_pending_shutdowns(session_id: str) -> None:
     """Complete shutdown for members stuck in shutting_down (e.g. Console path)."""
+    import logging
+
     from pi_team.runtime import get_team_runtime
     from pi_team.store import resolve_database_path
 
     runtime = get_team_runtime()
     if runtime is None:
         return
-    db_path = resolve_database_path(runtime.database_path)
-    store = TeamStore(db_path)
-    teams = store.list_teams_for_session(session_id)
-    for team in teams:
-        for member in store.list_members(team.id):
-            if member.status != STATUS_SHUTTING_DOWN:
-                continue
-            messages = store.list_unread_messages(
-                team.id,
-                member.id,
-                100,
-            )
-            shutdown_reqs = [
-                m
-                for m in messages
-                if m.message_type == "shutdown_request"
-            ]
-            if not shutdown_reqs:
-                continue
-            all_ids = [m.id for m in messages]
-            await complete_teammate_shutdown(
-                store,
-                session_id=session_id,
-                member=member,
-                requests=shutdown_reqs,
-                mark_read_ids=all_ids,
-            )
+    try:
+        db_path = resolve_database_path(runtime.database_path)
+        store = TeamStore(db_path)
+        teams = store.list_teams_for_session(session_id)
+        for team in teams:
+            for member in store.list_members(team.id):
+                if member.status != STATUS_SHUTTING_DOWN:
+                    continue
+                messages = store.list_unread_messages(
+                    team.id,
+                    member.id,
+                    100,
+                )
+                shutdown_reqs = [
+                    m
+                    for m in messages
+                    if m.message_type == "shutdown_request"
+                ]
+                if not shutdown_reqs:
+                    continue
+                all_ids = [m.id for m in messages]
+                await complete_teammate_shutdown(
+                    store,
+                    session_id=session_id,
+                    member=member,
+                    requests=shutdown_reqs,
+                    mark_read_ids=all_ids,
+                )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "drain_pending_shutdowns failed for session=%s",
+            session_id,
+        )

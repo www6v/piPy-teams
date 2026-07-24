@@ -1,14 +1,26 @@
-"""SQLite persistence for teams (shared oma.db with oma-server)."""
+"""Team persistence — SQLite or MySQL (shared with oma-server).
+
+Backend selection:
+  * ``database_path`` / ``DATABASE_URL`` looks like a MySQL DSN
+    (``mysql://``, ``mysql+…://``, or Go ``user:pass@tcp(host)/db``)
+    → MySQL via PyMySQL (same DB as the platform after the SQLite→MySQL cutover).
+  * Otherwise → SQLite file path (tests / legacy local dev).
+
+Tables live in the platform schema (see ``platform_mysql.sql`` /
+``017_teams.sql``); this module does not create them.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
+from urllib.parse import unquote, urlparse
 
 
 @dataclass(frozen=True)
@@ -75,10 +87,29 @@ class TeamTaskRow:
     updated_at: int
 
 
+def is_mysql_dsn(value: str | None) -> bool:
+    if not value:
+        return False
+    v = value.strip()
+    return (
+        v.startswith("mysql://")
+        or v.startswith("mysql+")
+        or "@tcp(" in v
+    )
+
+
 def resolve_database_path(explicit: str | None = None) -> str:
+    """Resolve the team store DSN or SQLite path.
+
+    Prefers an explicit value, then ``DATABASE_URL`` (MySQL), then legacy
+    ``OMA_DATABASE_PATH`` / ``DATABASE_PATH`` (SQLite file).
+    """
     if explicit:
         path = explicit
     else:
+        url = os.environ.get("DATABASE_URL")
+        if is_mysql_dsn(url):
+            return url.strip()
         path = None
         for key in ("OMA_DATABASE_PATH", "DATABASE_PATH"):
             value = os.environ.get(key)
@@ -87,15 +118,159 @@ def resolve_database_path(explicit: str | None = None) -> str:
                 break
         if path is None:
             path = "./data/oma.db"
+    if is_mysql_dsn(path):
+        return path.strip()
     return os.path.abspath(path)
+
+
+def _parse_mysql_dsn(raw: str) -> dict[str, Any]:
+    """Parse mysql[+driver]://user:pass@host:port/db or Go-style DSN."""
+    if "@tcp(" in raw:
+        match = re.match(
+            r"^([^:]+):([^@]*)@tcp\(([^):]+):(\d+)\)/([^?]+)(\?.*)?$",
+            raw,
+        )
+        if not match:
+            raise ValueError(f"cannot parse mysql DSN: {raw}")
+        return {
+            "host": match.group(3),
+            "port": int(match.group(4)),
+            "user": unquote(match.group(1)),
+            "password": unquote(match.group(2)),
+            "database": match.group(5),
+        }
+    s = raw
+    for prefix in (
+        "mysql+aiomysql://",
+        "mysql+mysqlconnector://",
+        "mysql+pymysql://",
+        "mysql://",
+    ):
+        if s.startswith(prefix):
+            s = "mysql://" + s[len(prefix):]
+            break
+    parsed = urlparse(s)
+    return {
+        "host": parsed.hostname,
+        "port": parsed.port or 3306,
+        "user": unquote(parsed.username or ""),
+        "password": unquote(parsed.password or ""),
+        "database": (parsed.path or "").lstrip("/"),
+    }
+
+
+def _mysql_rewrite_sql(sql: str) -> str:
+    """Translate SQLite-flavoured SQL used by TeamStore into MySQL SQL."""
+    # ? placeholders → %s
+    sql = sql.replace("?", "%s")
+    # `role` is reserved in MySQL 8 — quote bare column references.
+    sql = re.sub(r"\brole\b", "`role`", sql)
+    return sql
+
+
+class _MySQLRow:
+    """Dict row with sqlite3.Row-like ``row['col']`` access."""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+
+class _MySQLCursor:
+    def __init__(self, impl: Any) -> None:
+        self._impl = impl
+        self._rows: list[dict[str, Any]] | None = None
+
+    def _materialize(self) -> None:
+        if self._rows is None:
+            rows = self._impl.fetchall()
+            self._rows = list(rows) if rows else []
+
+    def fetchone(self) -> _MySQLRow | None:
+        self._materialize()
+        assert self._rows is not None
+        if not self._rows:
+            return None
+        return _MySQLRow(self._rows.pop(0))
+
+    def fetchall(self) -> list[_MySQLRow]:
+        self._materialize()
+        assert self._rows is not None
+        out = [_MySQLRow(row) for row in self._rows]
+        self._rows = []
+        return out
+
+    @property
+    def rowcount(self) -> int:
+        return int(self._impl.rowcount or 0)
+
+
+class _MySQLConn:
+    """Thin adapter so TeamStore can keep using ``conn.execute(sql, params)``."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: Any = ()) -> _MySQLCursor:
+        rewritten = _mysql_rewrite_sql(sql)
+        cursor = self._conn.cursor()
+        cursor.execute(rewritten, params or ())
+        return _MySQLCursor(cursor)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _open_mysql(dsn: str) -> _MySQLConn:
+    import pymysql
+    import pymysql.cursors
+
+    cfg = _parse_mysql_dsn(dsn)
+    conn = pymysql.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        user=cfg["user"],
+        password=cfg["password"],
+        database=cfg["database"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
+    return _MySQLConn(conn)
 
 
 class TeamStore:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
+        self._backend = "mysql" if is_mysql_dsn(db_path) else "sqlite"
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
+    def _conn(self) -> Iterator[Any]:
+        if self._backend == "mysql":
+            conn = _open_mysql(self._db_path)
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+            return
+
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -136,8 +311,6 @@ class TeamStore:
         if row is None:
             return None
         try:
-            import json
-
             config = json.loads(row["config"])
             name = config.get("name")
             if isinstance(name, str) and name.strip():
@@ -150,7 +323,7 @@ class TeamStore:
         with self._conn() as conn:
             row = conn.execute(
                 """
-                SELECT 1 FROM agents
+                SELECT 1 AS ok FROM agents
                 WHERE id = ? AND tenant_id = ?
                 """,
                 (agent_id, tenant_id or "default"),
@@ -468,7 +641,7 @@ class TeamStore:
             return int(cur.rowcount) > 0
 
 
-def _scan_team(row: sqlite3.Row | None) -> TeamRow | None:
+def _scan_team(row: Any | None) -> TeamRow | None:
     if row is None:
         return None
     return TeamRow(
@@ -484,7 +657,7 @@ def _scan_team(row: sqlite3.Row | None) -> TeamRow | None:
     )
 
 
-def _scan_member(row: sqlite3.Row | None) -> TeamMemberRow | None:
+def _scan_member(row: Any | None) -> TeamMemberRow | None:
     if row is None:
         return None
     return TeamMemberRow(
@@ -501,7 +674,7 @@ def _scan_member(row: sqlite3.Row | None) -> TeamMemberRow | None:
     )
 
 
-def _scan_message(row: sqlite3.Row | None) -> AgentMessageRow | None:
+def _scan_message(row: Any | None) -> AgentMessageRow | None:
     if row is None:
         return None
     read_at = row["read_at"]
@@ -518,7 +691,7 @@ def _scan_message(row: sqlite3.Row | None) -> AgentMessageRow | None:
     )
 
 
-def _scan_task(row: sqlite3.Row | None) -> TeamTaskRow | None:
+def _scan_task(row: Any | None) -> TeamTaskRow | None:
     if row is None:
         return None
 
