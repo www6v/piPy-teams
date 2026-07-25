@@ -18,5 +18,5 @@ build-backend = "hatchling.build"
 packages = ["src/pi_team"]
 
 [tool.uv.sources]
-pi-agent = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.2.0", subdirectory = "packages/pi_agent" }
-pi-ai = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.2.0", subdirectory = "packages/pi_ai" }
+pi-agent = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.3.0", subdirectory = "packages/pi_agent" }
+pi-ai = { git = "https://gitee.com/www6v6v/piPy.git", branch = "v0.3.0", subdirectory = "packages/pi_ai" }
